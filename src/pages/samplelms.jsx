@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   User, Phone, ShieldCheck, CreditCard, CheckCircle,
   Clock, XCircle, ArrowRight, Building2, FileText, Camera,
-  AlertCircle, Loader2, RefreshCw, Home, Edit2, Sparkles, X
+  AlertCircle, Loader2, RefreshCw, Home, Edit2
 } from "lucide-react";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -37,228 +37,8 @@ function evaluateApplication({ pan, aadhaar, address, amount }) {
   return { eligibilityAmount: 500000, riskLevel: "low", decision: "approved", reason: "All checks passed. Full limit unlocked." };
 }
 
-// ══ SMART NUDGE SYSTEM ════════════════════════════════════════════════════════
-// Field + screen specific nudges — human, fast, contextual
-// hesitate (8s on a field)   → specific tip for that exact field
-// stuck (1st error)          → exactly what's wrong and how to fix it
-// repeat (2nd focus)         → gentle guide for that field
-// idle (15s no activity)     → screen-specific encouragement
-// no_progress (45s)          → you're X% done, what's next
-
-// Per-field hesitation tips — shown after 8s on that field
-const FIELD_HESITATE = {
-  name:    "Just your full legal name — like on your Aadhaar card.",
-  phone:   "Your 10-digit mobile number. We'll send an OTP to verify.",
-  otp:     "Check your SMS — the 4-digit code expires in 10 minutes.",
-  pan:     "PAN looks like ABCDE1234F — 5 letters, 4 numbers, 1 letter.",
-  aadhaar: "Your 12-digit Aadhaar number. Find it on your Aadhaar card or mAadhaar app.",
-  dob:     "Enter your date of birth exactly as on your Aadhaar.",
-  address: "Include your full address — street, city, and PIN code.",
-  accNo:   "Your bank account number is on your passbook or cheque.",
-  ifsc:    "IFSC is on your cheque leaf — starts with bank code like SBIN, HDFC.",
-};
-
-// Per-field error nudges — shown immediately on validation failure
-const FIELD_ERROR = {
-  name:    "Full name needed — first and last name please.",
-  phone:   "Looks off — Indian mobile numbers are exactly 10 digits.",
-  otp:     "Wrong code? Wait a moment and try resending.",
-  pan:     "PAN format: 5 letters + 4 numbers + 1 letter. Like ABCDE1234F.",
-  aadhaar: "Aadhaar is exactly 12 digits — no spaces needed.",
-  dob:     "Please pick your date of birth from the calendar.",
-  address: "Add more detail — include your area, city and PIN.",
-  accNo:   "Account numbers are usually 9–18 digits long.",
-  ifsc:    "IFSC is 11 characters — 4 letters, a zero, then 6 more.",
-};
-
-// Screen-level idle nudges (15s no activity)
-const SCREEN_IDLE = {
-  basic:    "Almost started — just your name and number to go!",
-  loan:     "Drag the slider to pick your amount. Takes 5 seconds. 👆",
-  personal: "This step keeps your loan safe. Half done already!",
-  upload:   "Snap a photo with your phone — no scanner needed.",
-  bank:     "Last step before review — just your account details.",
-  review:   "Everything looks good? One tap and you're done! 🎉",
-};
-
-// Screen entry encouragement (shown once, 2s after arriving)
-const SCREEN_WELCOME = {
-  loan:     "Great start! Now pick your loan amount.",
-  personal: "Step 3 of 7 — identity check. Safe and encrypted.",
-  upload:   "Almost halfway! Just 3 quick uploads.",
-  bank:     "One step away from review — where should we send the money?",
-  review:   "You're 90% there — just confirm your details!",
-};
-
-function useNudge(screen, stepIndex, totalSteps) {
-  const [nudge, setNudge] = useState(null);
-  const timers = useRef({});
-  const shownRef = useRef({});
-  const lastScreen = useRef(screen);
-
-  const show = useCallback((key, message) => {
-    if (shownRef.current[key]) return;
-    shownRef.current[key] = true;
-    const id = Date.now();
-    setNudge({ id, message });
-    logEvent("NUDGE", { key, message });
-    clearTimeout(timers.current.autoDismiss);
-    timers.current.autoDismiss = setTimeout(() => setNudge(n => n?.id === id ? null : n), 6000);
-  }, []);
-
-  const dismissNudge = useCallback(() => setNudge(null), []);
-
-  // Reset on screen change + show welcome nudge
-  useEffect(() => {
-    if (lastScreen.current !== screen) {
-      lastScreen.current = screen;
-      shownRef.current = {};
-      setNudge(null);
-      Object.values(timers.current).forEach(clearTimeout);
-      timers.current = {};
-      // Show welcome nudge 1.5s after screen arrives
-      if (SCREEN_WELCOME[screen]) {
-        timers.current.welcome = setTimeout(() => show("welcome", SCREEN_WELCOME[screen]), 1500);
-      }
-    }
-  }, [screen, show]);
-
-  // Idle: 15s on same screen with no interaction
-  useEffect(() => {
-    const IDLE_MS = 15000;
-    let t;
-    const reset = () => {
-      clearTimeout(t);
-      if (SCREEN_IDLE[screen]) t = setTimeout(() => show("idle_" + screen, SCREEN_IDLE[screen]), IDLE_MS);
-    };
-    const events = ["mousemove", "keydown", "touchstart", "click"];
-    events.forEach(e => window.addEventListener(e, reset, { passive: true }));
-    reset();
-    return () => { clearTimeout(t); events.forEach(e => window.removeEventListener(e, reset)); };
-  }, [screen, show]);
-
-  // No progress: 45s on same step
-  useEffect(() => {
-    const pct = Math.round(((stepIndex - 1) / totalSteps) * 100);
-    const msg = `You're ${pct}% done — keep going, almost there! 💪`;
-    const t = setTimeout(() => show("noprogress_" + screen, msg), 45000);
-    return () => clearTimeout(t);
-  }, [screen, stepIndex, totalSteps, show]);
-
-  // trackFocus: call with fieldKey on input focus
-  const trackFocus = useCallback((fieldKey) => {
-    // Hesitate: 8s on same field → specific tip
-    clearTimeout(timers.current["h_" + fieldKey]);
-    timers.current["h_" + fieldKey] = setTimeout(() => {
-      if (FIELD_HESITATE[fieldKey]) show("hesitate_" + fieldKey, FIELD_HESITATE[fieldKey]);
-    }, 8000);
-  }, [show]);
-
-  // trackError: call with fieldKey when validation fails
-  const trackError = useCallback((fieldKey) => {
-    if (FIELD_ERROR[fieldKey]) show("err_" + fieldKey, FIELD_ERROR[fieldKey]);
-  }, [show]);
-
-  return { nudge, dismissNudge, trackFocus, trackError };
-}
-
-// ── Nudge Card UI ─────────────────────────────────────────────────────────────
-function NudgeCard({ nudge, onDismiss }) {
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    if (nudge) {
-      setVisible(false);
-      requestAnimationFrame(() => requestAnimationFrame(() => setVisible(true)));
-    } else {
-      setVisible(false);
-    }
-  }, [nudge?.id]);
-
-  if (!nudge) return null;
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        bottom: "24px",
-        right: "20px",
-        zIndex: 9999,
-        maxWidth: "280px",
-        opacity: visible ? 1 : 0,
-        transform: visible ? "translateY(0) scale(1)" : "translateY(12px) scale(0.97)",
-        transition: "opacity 0.3s ease, transform 0.3s ease",
-        pointerEvents: visible ? "auto" : "none",
-      }}
-    >
-      <div style={{
-        background: "#1e293b",
-        borderRadius: "14px",
-        padding: "12px 14px 12px 14px",
-        boxShadow: "0 8px 30px rgba(0,0,0,0.18)",
-        display: "flex",
-        alignItems: "flex-start",
-        gap: "10px",
-      }}>
-        <Sparkles size={15} style={{ color: "#facc15", flexShrink: 0, marginTop: "2px" }} />
-        <span style={{ color: "#f1f5f9", fontSize: "13px", lineHeight: "1.5", fontWeight: 500, flex: 1 }}>
-          {nudge.message}
-        </span>
-        <button
-          onClick={onDismiss}
-          style={{ background: "none", border: "none", cursor: "pointer", padding: "0 0 0 4px", color: "#64748b", flexShrink: 0, marginTop: "1px" }}
-        >
-          <X size={13} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ── Progress % pill (bottom-left) ─────────────────────────────────────────────
-function ProgressPill({ step, total }) {
-  if (step <= 0 || step > total) return null;
-  const pct = Math.round((step / total) * 100);
-  return (
-    <div style={{
-      position: "fixed",
-      bottom: "24px",
-      left: "20px",
-      zIndex: 9999,
-      background: "#fff",
-      border: "1.5px solid #e2e8f0",
-      borderRadius: "999px",
-      padding: "6px 12px",
-      fontSize: "12px",
-      fontWeight: 700,
-      color: "#334155",
-      boxShadow: "0 2px 12px rgba(0,0,0,0.07)",
-      display: "flex",
-      alignItems: "center",
-      gap: "7px",
-    }}>
-      <div style={{
-        width: "32px",
-        height: "4px",
-        background: "#e2e8f0",
-        borderRadius: "99px",
-        overflow: "hidden",
-      }}>
-        <div style={{
-          width: `${pct}%`,
-          height: "100%",
-          background: "#0f172a",
-          borderRadius: "99px",
-          transition: "width 0.5s ease",
-        }} />
-      </div>
-      {pct}% done
-    </div>
-  );
-}
-
 // ── Reusable primitives ───────────────────────────────────────────────────────
-function Inp({ label, error, ok, icon: Icon, iconRight, onFocus: externalFocus, ...rest }) {
+function Inp({ label, error, ok, icon: Icon, iconRight, ...rest }) {
   return (
     <div className="mb-4">
       {label && <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">{label}</label>}
@@ -268,7 +48,6 @@ function Inp({ label, error, ok, icon: Icon, iconRight, onFocus: externalFocus, 
           className={`w-full h-12 rounded-xl border bg-white text-slate-900 text-sm font-medium outline-none transition-all duration-150
             ${Icon ? "pl-10" : "pl-4"} pr-4
             ${error ? "border-red-400 focus:ring-2 focus:ring-red-100" : ok ? "border-emerald-400" : "border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-50"}`}
-          onFocus={externalFocus}
           {...rest}
         />
         {iconRight && <div className="absolute right-3.5 top-1/2 -translate-y-1/2">{iconRight}</div>}
@@ -423,7 +202,7 @@ function Landing({ onNext }) {
   );
 }
 
-function BasicInfo({ data, setData, onNext, trackFocus, trackError }) {
+function BasicInfo({ data, setData, onNext }) {
   const [otpSent, setOtpSent] = useState(false);
   const [otp, setOtp] = useState(["", "", "", ""]);
   const [verifying, setVerifying] = useState(false);
@@ -432,8 +211,8 @@ function BasicInfo({ data, setData, onNext, trackFocus, trackError }) {
 
   function validate() {
     const e = {};
-    if (!data.name.trim() || data.name.trim().length < 2) { e.name = "Enter your full name"; trackError && trackError("name"); }
-    if (!/^\d{10}$/.test(data.phone)) { e.phone = "Enter a valid 10-digit number"; trackError && trackError("phone"); }
+    if (!data.name.trim() || data.name.trim().length < 2) e.name = "Enter your full name";
+    if (!/^\d{10}$/.test(data.phone)) e.phone = "Enter a valid 10-digit number";
     setErrors(e);
     return !Object.keys(e).length;
   }
@@ -458,11 +237,9 @@ function BasicInfo({ data, setData, onNext, trackFocus, trackError }) {
         <p className="text-sm text-slate-500 mt-1 mb-7">Takes 30 seconds.</p>
         <Inp label="Full name" icon={User} placeholder="Rahul Sharma"
           value={data.name} error={errors.name} ok={data.name.trim().length > 1}
-          onFocus={() => trackFocus && trackFocus("name")}
           onChange={e => { setData({ ...data, name: e.target.value }); setErrors(v => ({...v, name: ""})); }} />
         <Inp label="Phone number" icon={Phone} placeholder="9876543210" maxLength={10}
           value={data.phone} error={errors.phone} ok={data.phone.length === 10}
-          onFocus={() => trackFocus && trackFocus("phone")}
           onChange={e => { setData({ ...data, phone: e.target.value.replace(/\D/g, "") }); setErrors(v => ({...v, phone: ""})); }} />
 
         {!otpSent ? (
@@ -477,7 +254,6 @@ function BasicInfo({ data, setData, onNext, trackFocus, trackError }) {
                 <input key={i} ref={refs[i]}
                   className="flex-1 h-14 text-center text-xl font-bold rounded-xl border-2 border-slate-200 bg-white text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-50 transition-all"
                   maxLength={1} value={d} inputMode="numeric"
-                  onFocus={() => trackFocus && trackFocus("otp")}
                   onChange={e => handleOtp(i, e.target.value)}
                   onKeyDown={e => e.key === "Backspace" && !d && i > 0 && refs[i - 1].current.focus()} />
               ))}
@@ -558,7 +334,7 @@ function LoanSelect({ data, setData, onNext, personal }) {
   );
 }
 
-function PersonalInfo({ data, setData, onNext, trackFocus, trackError }) {
+function PersonalInfo({ data, setData, onNext }) {
   const [errors, setErrors] = useState({});
   const [touched, setTouched] = useState({});
   const [verifyMsg, setVerifyMsg] = useState("");
@@ -567,10 +343,10 @@ function PersonalInfo({ data, setData, onNext, trackFocus, trackError }) {
 
   function validate() {
     const e = {};
-    if (!PAN_RE.test(data.pan)) { e.pan = "Enter valid PAN (e.g. ABCDE1234F)"; trackError && trackError("pan"); }
-    if (data.aadhaar.length !== 12) { e.aadhaar = "Aadhaar must be 12 digits"; trackError && trackError("aadhaar"); }
-    if (!data.dob) { e.dob = "Enter your date of birth"; trackError && trackError("dob"); }
-    if (data.address.trim().length < 10) { e.address = "Enter your complete address"; trackError && trackError("address"); }
+    if (!PAN_RE.test(data.pan)) e.pan = "Enter valid PAN (e.g. ABCDE1234F)";
+    if (data.aadhaar.length !== 12) e.aadhaar = "Aadhaar must be 12 digits";
+    if (!data.dob) e.dob = "Enter your date of birth";
+    if (data.address.trim().length < 10) e.address = "Enter your complete address";
     setErrors(e); return !Object.keys(e).length;
   }
 
@@ -593,22 +369,18 @@ function PersonalInfo({ data, setData, onNext, trackFocus, trackError }) {
         <Inp label="PAN number" icon={CreditCard} placeholder="ABCDE1234F" maxLength={10}
           value={data.pan} error={touched.pan && errors.pan} ok={PAN_RE.test(data.pan)}
           style={{ letterSpacing: "2px", textTransform: "uppercase" }}
-          onFocus={() => trackFocus && trackFocus("pan")}
           onChange={e => f("pan", e.target.value.toUpperCase())}
           onBlur={() => { touch("pan"); if (!PAN_RE.test(data.pan)) setErrors(e => ({...e, pan: "Enter valid PAN (e.g. ABCDE1234F)"})); }} />
         <Inp label="Aadhaar number" icon={ShieldCheck} placeholder="123456789012" maxLength={12}
           value={data.aadhaar} error={touched.aadhaar && errors.aadhaar} ok={data.aadhaar.length === 12}
           style={{ letterSpacing: "2px" }}
-          onFocus={() => trackFocus && trackFocus("aadhaar")}
           onChange={e => f("aadhaar", e.target.value.replace(/\D/g, ""))}
           onBlur={() => { touch("aadhaar"); if (data.aadhaar.length !== 12) setErrors(e => ({...e, aadhaar: "Aadhaar must be 12 digits"})); }} />
         <Inp label="Date of birth" type="date"
           value={data.dob} error={touched.dob && errors.dob} ok={!!data.dob}
-          onFocus={() => trackFocus && trackFocus("dob")}
           onChange={e => f("dob", e.target.value)} onBlur={() => touch("dob")} />
         <Inp label="Home address" placeholder="123 MG Road, Mumbai, Maharashtra 400001"
           value={data.address} error={touched.address && errors.address} ok={data.address.trim().length >= 10}
-          onFocus={() => trackFocus && trackFocus("address")}
           onChange={e => f("address", e.target.value)} onBlur={() => touch("address")} />
 
         {verifyMsg && (
@@ -680,7 +452,7 @@ function UploadDocs({ uploads, setUploads, onNext }) {
   );
 }
 
-function BankDetails({ data, setData, onNext, trackFocus }) {
+function BankDetails({ data, setData, onNext }) {
   const [errors, setErrors] = useState({});
   const bankName = getBankName(data.ifsc);
   const validIfsc = IFSC_RE.test(data.ifsc);
@@ -701,12 +473,10 @@ function BankDetails({ data, setData, onNext, trackFocus }) {
         <Inp label="Account number" placeholder="0123456789"
           value={data.accNo} error={errors.accNo} ok={validAcc}
           style={{ letterSpacing: "2px" }}
-          onFocus={() => trackFocus && trackFocus("accNo")}
           onChange={e => { setData({ ...data, accNo: e.target.value.replace(/\D/g, "") }); setErrors(v => ({...v, accNo: ""})); }} />
         <Inp label="IFSC code" placeholder="SBIN0001234" maxLength={11}
           value={data.ifsc} error={errors.ifsc} ok={validIfsc}
           style={{ letterSpacing: "2px", textTransform: "uppercase" }}
-          onFocus={() => trackFocus && trackFocus("ifsc")}
           onChange={e => { setData({ ...data, ifsc: e.target.value.toUpperCase() }); setErrors(v => ({...v, ifsc: ""})); }}
           iconRight={validIfsc && bankName ? <CheckCircle size={15} className="text-emerald-500" /> : null} />
         {validIfsc && bankName && (
@@ -1026,16 +796,13 @@ export default function App() {
   const [payments, setPayments] = useState([]);
   const [decision, setDecision] = useState(null);
 
-  // ── Nudge system wired here ────────────────────────────────────────────────
-  const step = STEP[screen] || 0;
-  const { nudge, dismissNudge, trackFocus, trackError } = useNudge(screen, step, TOTAL);
-
   const go = useCallback(s => {
     logEvent("STEP_CHANGE", { to: s });
     setScreen(s);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
+  const step = STEP[screen] || 0;
   const emi = calcEMI(loan.amount, loan.months);
 
   function handlePayDone() {
@@ -1053,21 +820,15 @@ export default function App() {
       {step > 0 && step <= TOTAL && <TopBar step={step} total={TOTAL} />}
       <Header step={step} total={TOTAL} />
       {screen === "landing"   && <Landing onNext={() => go("basic")} />}
-      {screen === "basic"     && <BasicInfo data={basic} setData={setBasic} onNext={() => go("loan")} trackFocus={trackFocus} />}
+      {screen === "basic"     && <BasicInfo data={basic} setData={setBasic} onNext={() => go("loan")} />}
       {screen === "loan"      && <LoanSelect data={loan} setData={setLoan} personal={personal} onNext={() => go("personal")} />}
-      {screen === "personal"  && <PersonalInfo data={personal} setData={setPersonal} onNext={() => go("upload")} trackFocus={trackFocus} />}
+      {screen === "personal"  && <PersonalInfo data={personal} setData={setPersonal} onNext={() => go("upload")} />}
       {screen === "upload"    && <UploadDocs uploads={uploads} setUploads={setUploads} onNext={() => go("bank")} />}
-      {screen === "bank"      && <BankDetails data={bank} setData={setBank} onNext={() => go("review")} trackFocus={trackFocus} />}
+      {screen === "bank"      && <BankDetails data={bank} setData={setBank} onNext={() => go("review")} />}
       {screen === "review"    && <Review personal={{ ...basic, ...personal }} loan={loan} bank={bank} onSubmit={(result) => { setDecision(result); go("status"); }} onEdit={go} />}
       {screen === "status"    && <StatusScreen decision={decision} onDashboard={() => go("dashboard")} />}
       {screen === "dashboard" && <Dashboard loan={loan} payments={payments} decision={decision} onPay={() => go("payment")} onHome={() => go("landing")} />}
       {screen === "payment"   && <Payment emi={emi} onDone={handlePayDone} onBack={() => go("dashboard")} />}
-
-      {/* ── Smart Nudge Card (bottom-right, auto-fade) ── */}
-      <NudgeCard nudge={nudge} onDismiss={dismissNudge} />
-
-      {/* ── Progress % Pill (bottom-left, only during application flow) ── */}
-      <ProgressPill step={step} total={TOTAL} />
     </div>
   );
 }
