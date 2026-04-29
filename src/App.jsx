@@ -5,7 +5,7 @@ import "./index.css";
 import Home from "./pages/Website/home";
 import HomeDemo from "./pages/home";
 import Demo from "./pages/demo";
-
+import Samplelms from "./pages/samplelms";
 import Bookdemo from "./pages/Website/bookdemo";
 import Privacy from "./pages/Website/privacy";
 import Security from "./pages/Website/security";
@@ -15,7 +15,7 @@ import Article1 from "./pages/Website/Article1";
 import Article2 from "./pages/Website/Article2";
 import Pdf from "./components/reactpdf";
 import ConsentModal from "./pages/Website/cokkiemodal";
-
+import './pages/trackflow-nudge.js'
 import LiveDashboard from "./pages/Dashboard";
 import ModelDashboard from "./pages/Dashboard";
 /* 🔐 import protected route */
@@ -32,6 +32,7 @@ export default function App() {
         {/* Website */}
         <Route path="/" element={<Home />} />
         <Route path="/demohome" element={<HomeDemo />} />
+        <Route path="/lms" element={<Samplelms />} />
 
         {/* Demo */}
         <Route path="/demo" element={<Demo />} />
